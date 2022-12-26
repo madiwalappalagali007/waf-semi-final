@@ -1,0 +1,101 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless patterns - AWS WAF to Amazon API Gateway REST
+
+Resources:
+  # AWS WAF Access Control List limits each IP to 100 requestes per second
+  MyWAFACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      CustomResponseBodies: # Define a response from WAF
+        CountryNotValid:
+          Content: Country not allowed
+          ContentType: TEXT_PLAIN
+      DefaultAction:
+        Block:
+          CustomResponse: # Choose a defined template to respond when blocked
+            ResponseCode: "403"
+            CustomResponseBodyKey: CountryNotValid
+      Description: Application WAF
+      Scope: REGIONAL
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: AppRules
+        SampledRequestsEnabled: true
+      Rules:
+        - Action:
+            Allow: {} # Allow if conditions are met
+          Name: AllowCountryList
+          Priority: 0
+          Statement:
+            GeoMatchStatement:
+              CountryCodes: # Requests from following countries are allowed (Add your country code to test)
+                - US
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: AllowCountryList
+            SampledRequestsEnabled: true
+
+  CloudfrontDistribution:
+    Type: "AWS::CloudFront::Distribution"
+    Properties:
+      DistributionConfig:
+        Comment: "Cloudfront distribution for serverless website"
+        DefaultRootObject: "index.html"
+        Enabled: true
+        HttpVersion: http2
+        # List of origins that Cloudfront will connect to
+        Origins:
+          - Id: s3-website
+            DomainName: !GetAtt S3Bucket.DomainName
+            S3OriginConfig:
+              # Restricting Bucket access through an origin access identity
+              OriginAccessIdentity:
+                Fn::Sub: 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
+        # To connect the CDN to the origins you need to specify behaviours
+        DefaultCacheBehavior:
+          # Compress resources automatically ( gzip )
+          Compress: 'true'
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          ForwardedValues:
+            QueryString: false
+          TargetOriginId: s3-website
+          ViewerProtocolPolicy : redirect-to-https
+  # Amazon API gateway REST API
+  MyApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      EndpointConfiguration: REGIONAL
+      TracingEnabled: true
+
+  # Associate the WebACL with the API gateway
+  MyWAFAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn: !Sub arn:aws:apigateway:${AWS::Region}::/restapis/${MyApi}/stages/Prod
+      WebACLArn: !GetAtt MyWAFACL.Arn
+
+# Lambda function as an example micro-service behind the API Gateway REST endpoint
+  MyLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Events:
+        RootGet:
+          Type: Api
+          Properties:
+            Path: /
+            Method: get
+            RestApiId: !Ref MyApi
+
+Outputs:
+  # API endpoint for testing
+  ApiEndpoint:
+    Description: "API endpoint URL"
+    Value: !Sub https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/Prod
