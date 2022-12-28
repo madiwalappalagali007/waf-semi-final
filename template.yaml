@@ -76,7 +76,7 @@ Resources:
   MyWAFAssociation:
     Type: AWS::WAFv2::WebACLAssociation
     Properties:
-      ResourceArn: !Sub arn:aws:cloudfront::944196645553:Cloudfront_Distribution/CloudfrontDistribution
+      ResourceArn: !Sub arn:aws:cloudfront::944196645553:CloudfrontDistribution/CloudFrontOriginAccessIdentity
       WebACLArn: !GetAtt WAFforcloudfront.Arn
   #cloudfront distribution
   CloudfrontDistribution:
