@@ -1,41 +1,84 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Serverless patterns - AWS WAF to Amazon API Gateway REST
-
+Description: Serverless patterns - Amazon API Gateway REST API with S3 integration
 Resources:
-  # AWS WAF Access Control List limits each IP to 100 requestes per second
-  MyWAFACL:
-    Type: AWS::WAFv2::WebACL
+  WAFforcloudfront:
+    Type: 'AWS::WAFv2::WebACL'
     Properties:
-      CustomResponseBodies: # Define a response from WAF
-        CountryNotValid:
-          Content: Country not allowed
-          ContentType: TEXT_PLAIN
-      DefaultAction:
-        Block:
-          CustomResponse: # Choose a defined template to respond when blocked
-            ResponseCode: "403"
-            CustomResponseBodyKey: CountryNotValid
-      Description: Application WAF
+      Name: ExampleWebACL1
       Scope: REGIONAL
+      Description: This is an example WebACL
+      DefaultAction:
+        Allow:
+          CustomRequestHandling:
+            InsertHeaders:
+              - Name: AllowActionHeader1Name
+                Value: AllowActionHeader1Value
+              - Name: AllowActionHeader2Name
+                Value: AllowActionHeader2Value
       VisibilityConfig:
-        CloudWatchMetricsEnabled: true
-        MetricName: AppRules
         SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: ExampleWebACLMetric
+      CustomResponseBodies:
+        CustomResponseBodyKey1:
+          ContentType: TEXT_PLAIN
+          Content: this is a plain text
+        CustomResponseBodyKey2:
+          ContentType: APPLICATION_JSON
+          Content: '{"jsonfieldname": "jsonfieldvalue"}'
+        CustomResponseBodyKey3:
+          ContentType: TEXT_HTML
+          Content: <html>HTML text content</html>
       Rules:
-        - Action:
-            Allow: {} # Allow if conditions are met
-          Name: AllowCountryList
+        - Name: RuleWithAWSManagedRules
           Priority: 0
-          Statement:
-            GeoMatchStatement:
-              CountryCodes: # Requests from following countries are allowed (Add your country code to test)
-                - US
+          OverrideAction:
+            Count: {}
           VisibilityConfig:
-            CloudWatchMetricsEnabled: true
-            MetricName: AllowCountryList
             SampledRequestsEnabled: true
-
+            CloudWatchMetricsEnabled: true
+            MetricName: RuleWithAWSManagedRulesMetric
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+              ExcludedRules: []
+        - Name: BlockXssAttack
+          Priority: 1
+          Action:
+            Block:
+              CustomResponse:
+                ResponseCode: 503
+                CustomResponseBodyKey: CustomResponseBodyKey1
+                ResponseHeaders:
+                  - Name: BlockActionHeader1Name
+                    Value: BlockActionHeader1Value
+                  - Name: BlockActionHeader2Name
+                    Value: BlockActionHeader2Value
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: BlockXssAttackMetric
+          Statement:
+            XssMatchStatement:
+              FieldToMatch:
+                AllQueryArguments: {}
+              TextTransformations:
+                - Priority: 1
+                  Type: NONE
+  CloudFrontOriginAccessIdentity:
+    Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: 'Serverless website OA'
+        # arn:aws:cloudfront::AWS_account_ID:resource_type/resource_ID
+  MyWAFAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn: !Sub arn:aws:cloudfront::944196645553:Cloudfront_Distribution/CloudfrontDistribution
+      WebACLArn: !GetAtt WAFforcloudfront.Arn
+  #cloudfront distribution
   CloudfrontDistribution:
     Type: "AWS::CloudFront::Distribution"
     Properties:
@@ -64,38 +107,214 @@ Resources:
             QueryString: false
           TargetOriginId: s3-website
           ViewerProtocolPolicy : redirect-to-https
-  # Amazon API gateway REST API
-  MyApi:
-    Type: AWS::Serverless::Api
+  S3Bucket:
+    Type: AWS::S3::Bucket
     Properties:
-      StageName: Prod
-      EndpointConfiguration: REGIONAL
-      TracingEnabled: true
-
-  # Associate the WebACL with the API gateway
-  MyWAFAssociation:
-    Type: AWS::WAFv2::WebACLAssociation
+      # Change bucket name to reflect your website
+      BucketName: proarchpocsubodhminfy.com
+  AuthCodeBucket:
+    Type: AWS::S3::Bucket
     Properties:
-      ResourceArn: !Sub arn:aws:apigateway:${AWS::Region}::/restapis/${MyApi}/stages/Prod
-      WebACLArn: !GetAtt MyWAFACL.Arn
-
-# Lambda function as an example micro-service behind the API Gateway REST endpoint
-  MyLambdaFunction:
+      # Change bucket name to reflect your website
+      BucketName: codeforauthrozier
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+      # Restricting access to cloudfront only.
+        Statement:
+          -
+            Effect: Allow
+            Action: 's3:GetObject'
+            Resource:
+              - !Sub "arn:aws:s3:::${S3Bucket}/*"
+            Principal:
+              AWS: !Sub "arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOriginAccessIdentity}"
+  BasicAuthorizerFunction:    #lambda authorizer for apigateway root url of Cloud Front Distribution
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: src/
-      Handler: app.lambda_handler
-      Runtime: python3.9
-      Events:
-        RootGet:
-          Type: Api
-          Properties:
-            Path: /
-            Method: get
-            RestApiId: !Ref MyApi
+      CodeUri: s3://codeforauthrozier/index.zip
+      Handler: index.handler
+      Runtime: nodejs18.x
+   # REST API
+  AppApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: apigw-s3-proxy
+      Description: S3 integraton REST API demo
 
-Outputs:
-  # API endpoint for testing
-  ApiEndpoint:
-    Description: "API endpoint URL"
-    Value: !Sub https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/Prod
+  ResourceFolder:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AppApi
+      ParentId: !GetAtt AppApi.RootResourceId
+      PathPart: '{folder}'
+
+  ResourceItem:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AppApi
+      ParentId: !Ref ResourceFolder
+      PathPart: '{item}'
+
+  Authorizer:
+    Type: 'AWS::ApiGateway::Authorizer'
+    Properties:
+      AuthorizerResultTtlInSeconds: '300'
+      AuthorizerUri: !Join
+        - ''
+        - - 'arn:aws:apigateway:'
+          - !Ref 'AWS::Region'
+          - ':lambda:path/2015-03-31/functions/'
+          - !GetAtt
+            - BasicAuthorizerFunction
+            - Arn
+          - /invocations
+      Type: TOKEN
+      IdentitySource: method.request.header.Auth
+      Name: DefaultAuthorizer
+      RestApiId: !Ref AppApi
+
+  RootMethodGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AppApi
+      ResourceId: !GetAtt AppApi.RootResourceId
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref Authorizer
+      Integration:
+        Type: HTTP
+        IntegrationHttpMethod: GET
+        Uri: !Sub "https://${CloudfrontDistribution}.cloudfront.net/"  #specify the endpoint of cloudfront configured
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Content-Length: integration.response.header.Content-Length
+              method.response.header.Content-Type: integration.response.header.Content-Type
+              method.response.header.Timestamp: integration.response.header.Date
+
+          - StatusCode: 400
+            SelectionPattern: 4\d{2}
+          - StatusCode: 500
+            SelectionPattern: 5\d{2}
+        PassthroughBehavior: WHEN_NO_MATCH
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Content-Length: true
+            method.response.header.Content-Type: true
+            method.response.header.Timestamp: true
+        - StatusCode: 400
+        - StatusCode: 500
+  ItemMethodPUT:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AppApi
+      ResourceId: !Ref ResourceItem
+      HttpMethod: PUT
+      AuthorizationType: NONE
+      RequestParameters:
+        method.request.path.item: true
+        method.request.path.folder: true
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: PUT
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:s3:path/{bucket}/{object}
+        Credentials: !GetAtt ApiGatewayS3Fullaccess.Arn  #change this read only to write
+        IntegrationResponses:
+        - StatusCode: 200
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestParameters:
+          integration.request.path.bucket: method.request.path.folder
+          integration.request.path.object: method.request.path.item
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+    - RootMethodGet
+    Properties:
+      RestApiId: !Ref AppApi
+  Stage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      StageName: Prod
+      RestApiId: !Ref AppApi
+      DeploymentId: !Ref Deployment
+  ApiGatewayS3Fullaccess:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - apigateway.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+  ETLJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Command:
+        Name: glueetl
+        ScriptLocation: s3://proarchsource-bucket/data.json
+      DefaultArguments:
+        --TempDir: s3://my-temp-dir
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      MaxRetries: 3
+      Name: my-etl-job
+      Role: arn:aws:iam::058547972331:role/GlueServiceRole
+      Timeout: 2880
+      GlueVersion: '2.0'
+
+  ETLTrigger:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Type: SCHEDULED
+      Schedule: rate(5 minutes)
+      Actions:
+        - JobName: !Ref ETLJob
+
+  ETLS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: etl-outputbucket
+
+  ETLLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: s3://proarchsource-bucket/my_lambda.zip
+      Handler: index.handler
+      Runtime: python3.8
+      Timeout: 30
+      Events:
+        S3Trigger:
+          Type: S3
+          Properties:
+            Bucket: !Ref ETLS3Bucket
+            Events: s3:ObjectCreated:*
+
+  ETLDynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      TableName: my-dynamodb-table
