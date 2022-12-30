@@ -76,64 +76,6 @@ Resources:
   MyWAFAssociation:
     Type: AWS::WAFv2::WebACLAssociation
     Properties:
-      ResourceArn: !Sub arn:aws:cloudfront::944196645553:CloudfrontDistribution/CloudFrontOriginAccessIdentity
+      ResourceArn: !Sub arn:aws:cloudfront::944196645553:distribution/E2QQM3W1L62T3U
       WebACLArn: !GetAtt WAFforcloudfront.Arn
-  #cloudfront distribution
-  CloudfrontDistribution:
-    Type: "AWS::CloudFront::Distribution"
-    Properties:
-      DistributionConfig:
-        Comment: "Cloudfront distribution for serverless website"
-        DefaultRootObject: "index.html"
-        Enabled: true
-        HttpVersion: http2
-        # List of origins that Cloudfront will connect to
-        Origins:
-          - Id: s3-website
-            DomainName: !GetAtt S3Bucket.DomainName
-            S3OriginConfig:
-              # Restricting Bucket access through an origin access identity
-              OriginAccessIdentity:
-                Fn::Sub: 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
-        # To connect the CDN to the origins you need to specify behaviours
-        DefaultCacheBehavior:
-          # Compress resources automatically ( gzip )
-          Compress: 'true'
-          AllowedMethods:
-            - GET
-            - HEAD
-            - OPTIONS
-          ForwardedValues:
-            QueryString: false
-          TargetOriginId: s3-website
-          ViewerProtocolPolicy : redirect-to-https
-  S3Bucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      # Change bucket name to reflect your website
-      BucketName: proarchpocsubodhminfy.com
-  AuthCodeBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      # Change bucket name to reflect your website
-      BucketName: codeforauthrozier
-  S3BucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref S3Bucket
-      PolicyDocument:
-      # Restricting access to cloudfront only.
-        Statement:
-          -
-            Effect: Allow
-            Action: 's3:GetObject'
-            Resource:
-              - !Sub "arn:aws:s3:::${S3Bucket}/*"
-            Principal:
-              AWS: !Sub "arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOriginAccessIdentity}"
-  BasicAuthorizerFunction:    #lambda authorizer for apigateway root url of Cloud Front Distribution
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: s3://codeforauthrozier/index.zip
-      Handler: index.handler
-      Runtime: nodejs18.x
+ 
