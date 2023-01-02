@@ -2,80 +2,283 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: Serverless patterns - Amazon API Gateway REST API with S3 integration
 Resources:
-  WAFforcloudfront:
-    Type: 'AWS::WAFv2::WebACL'
+  MyWAFACL:
+    Type: AWS::WAFv2::WebACL
     Properties:
-      Name: ExampleWebACL1
-      Scope: REGIONAL
+      Name: ExampleWebACLproarch
       Description: This is an example WebACL
+      Scope: CLOUDFRONT
       DefaultAction:
-        Allow:
-          CustomRequestHandling:
-            InsertHeaders:
-              - Name: AllowActionHeader1Name
-                Value: AllowActionHeader1Value
-              - Name: AllowActionHeader2Name
-                Value: AllowActionHeader2Value
+        Allow: {}
       VisibilityConfig:
         SampledRequestsEnabled: true
         CloudWatchMetricsEnabled: true
         MetricName: ExampleWebACLMetric
-      CustomResponseBodies:
-        CustomResponseBodyKey1:
-          ContentType: TEXT_PLAIN
-          Content: this is a plain text
-        CustomResponseBodyKey2:
-          ContentType: APPLICATION_JSON
-          Content: '{"jsonfieldname": "jsonfieldvalue"}'
-        CustomResponseBodyKey3:
-          ContentType: TEXT_HTML
-          Content: <html>HTML text content</html>
       Rules:
-        - Name: RuleWithAWSManagedRules
+        - Name: RulesTest
           Priority: 0
-          OverrideAction:
-            Count: {}
-          VisibilityConfig:
-            SampledRequestsEnabled: true
-            CloudWatchMetricsEnabled: true
-            MetricName: RuleWithAWSManagedRulesMetric
-          Statement:
-            ManagedRuleGroupStatement:
-              VendorName: AWS
-              Name: AWSManagedRulesCommonRuleSet
-              ExcludedRules: []
-        - Name: BlockXssAttack
-          Priority: 1
           Action:
-            Block:
-              CustomResponse:
-                ResponseCode: 503
-                CustomResponseBodyKey: CustomResponseBodyKey1
-                ResponseHeaders:
-                  - Name: BlockActionHeader1Name
-                    Value: BlockActionHeader1Value
-                  - Name: BlockActionHeader2Name
-                    Value: BlockActionHeader2Value
+           Block: {}
           VisibilityConfig:
             SampledRequestsEnabled: true
             CloudWatchMetricsEnabled: true
-            MetricName: BlockXssAttackMetric
+            MetricName: test
           Statement:
-            XssMatchStatement:
-              FieldToMatch:
-                AllQueryArguments: {}
-              TextTransformations:
-                - Priority: 1
-                  Type: NONE
+            RateBasedStatement:
+              Limit: 100
+              AggregateKeyType: IP
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # Change bucket name to reflect your website
+      BucketName: minfyawsproarch.com
+
+  lambdaauthorizercodeproarch:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:  authcodeforproarch
+#  MyObject:
+#   Type: AWS::S3::BucketObject
+#   Properties:
+#     Bucket: !Ref lambdaauthorizercodeproarch
+#     Key: index.zip
+#      File: index.zip
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+      # Restricting access to cloudfront only.
+        Statement:
+          -
+            Effect: Allow
+            Action: 's3:GetObject'
+            Resource:
+              - !Sub "arn:aws:s3:::${S3Bucket}/*"
+            Principal:
+              AWS: !Sub "arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOriginAccessIdentity}"
   CloudFrontOriginAccessIdentity:
     Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
     Properties:
       CloudFrontOriginAccessIdentityConfig:
         Comment: 'Serverless website OA'
-        # arn:aws:cloudfront::AWS_account_ID:resource_type/resource_ID
-  MyWAFAssociation:
-    Type: AWS::WAFv2::WebACLAssociation
+
+  #cloudfront distribution
+
+  CloudfrontDistribution:
+    Type: "AWS::CloudFront::Distribution"
     Properties:
-      ResourceArn: !Sub arn:aws:cloudfront::944196645553:distribution/E2QQM3W1L62T3U
-      WebACLArn: !GetAtt WAFforcloudfront.Arn
- 
+      DistributionConfig:
+        WebACLId: !GetAtt MyWAFACL.Arn
+        Comment: "Cloudfront distribution for serverless website"
+        DefaultRootObject: "index.html"
+        Enabled: true
+        HttpVersion: http2
+        # List of origins that Cloudfront will connect to
+        Origins:
+          - Id: s3-website
+            DomainName: !GetAtt S3Bucket.DomainName
+            S3OriginConfig:
+              # Restricting Bucket access through an origin access identity
+              OriginAccessIdentity:
+                Fn::Sub: 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
+        # To connect the CDN to the origins you need to specify behaviours
+        DefaultCacheBehavior:
+          # Compress resources automatically ( gzip )
+          Compress: 'true'
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          ForwardedValues:
+            QueryString: false
+          TargetOriginId: s3-website
+          ViewerProtocolPolicy : redirect-to-https
+  BasicAuthorizerFunction:    #lambda authorizer for apigateway root url of Cloud Front Distribution
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: s3://authcodeforproarch/index.zip
+      Handler: index.handler
+      Runtime: nodejs18.x
+
+   # REST API
+  ProdApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: apigw-s3-proxy
+      Description: S3 integraton REST API demo
+
+  ResourceFolder:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ProdApi
+      ParentId: !GetAtt ProdApi.RootResourceId
+      PathPart: '{folder}'
+
+  ResourceItem:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ProdApi
+      ParentId: !Ref ResourceFolder
+      PathPart: '{item}'
+
+  Authorizer:
+    Type: 'AWS::ApiGateway::Authorizer'
+    Properties:
+      AuthorizerResultTtlInSeconds: '300'
+      AuthorizerUri: !Join
+        - ''
+        - - 'arn:aws:apigateway:'
+          - !Ref 'AWS::Region'
+          - ':lambda:path/2015-03-31/functions/'
+          - !GetAtt
+            - BasicAuthorizerFunction
+            - Arn
+          - /invocations
+      Type: TOKEN
+      IdentitySource: method.request.header.Auth
+      Name: DefaultAuthorizer
+      RestApiId: !Ref ProdApi
+
+  RootMethodGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ProdApi
+      ResourceId: !GetAtt ProdApi.RootResourceId
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref Authorizer
+      Integration:
+        Type: HTTP
+        IntegrationHttpMethod: GET
+        Uri: !Sub "https://${CloudfrontDistribution}.cloudfront.net/"  #specify the endpoint of cloudfront configured
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Content-Length: integration.response.header.Content-Length
+              method.response.header.Content-Type: integration.response.header.Content-Type
+              method.response.header.Timestamp: integration.response.header.Date
+
+          - StatusCode: 400
+            SelectionPattern: 4\d{2}
+          - StatusCode: 500
+            SelectionPattern: 5\d{2}
+        PassthroughBehavior: WHEN_NO_MATCH
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Content-Length: true
+            method.response.header.Content-Type: true
+            method.response.header.Timestamp: true
+        - StatusCode: 400
+        - StatusCode: 500
+  ItemMethodPUT:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ProdApi
+      ResourceId: !Ref ResourceItem
+      HttpMethod: PUT
+      AuthorizationType: NONE
+      RequestParameters:
+        method.request.path.item: true
+        method.request.path.folder: true
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: PUT
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:s3:path/{bucket}/{object}
+        Credentials: !GetAtt ApiGatewayS3Fullaccess.Arn  #change this read only to write
+        IntegrationResponses:
+        - StatusCode: 200
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestParameters:
+          integration.request.path.bucket: method.request.path.folder
+          integration.request.path.object: method.request.path.item
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+    - RootMethodGet
+    Properties:
+      RestApiId: !Ref ProdApi
+  Stage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      StageName: Prod
+      RestApiId: !Ref ProdApi
+      DeploymentId: !Ref Deployment
+  ApiGatewayS3Fullaccess:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - apigateway.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+  ETLJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Command:
+        Name: glueetl
+        ScriptLocation: s3://proarchsource-bucket/
+      DefaultArguments:
+        --TempDir: s3://my-temp-dir
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      MaxRetries: 3
+      Name:  proarch-etljob
+      Role: arn:aws:iam::058547972331:role/GlueServiceRole
+      Timeout: 2880
+      GlueVersion: '2.0'
+
+  ETLTrigger:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Type: SCHEDULED
+      Schedule: rate(5 minutes)
+      Actions:
+        - JobName: !Ref ETLJob
+
+  ETLS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: targetbucket-etl
+
+  ETLLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: s3://proarchsource-bucket/my_lambda.zip
+      Handler: index.handler
+      Runtime: python3.8
+      Timeout: 30
+      Events:
+        S3Trigger:
+          Type: S3
+          Properties:
+            Bucket: !Ref ETLS3Bucket
+            Events: s3:ObjectCreated:*
+
+  ETLDynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      TableName:  proarch-dynamodbtable
